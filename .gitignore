@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+loanlens.db
+model/artifacts/*.joblib
+# keep manifest tracked:
+# model/artifacts/manifest_v1_0_0.json

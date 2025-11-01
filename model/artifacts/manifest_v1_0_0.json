@@ -1,0 +1,27 @@
+{
+  "model_version": "1.0.0",
+  "trained_at": "2025-11-01T06:19:58Z",
+  "framework": "scikit-learn",
+  "target": "approved",
+  "metrics": {
+    "roc_auc": 0.8551,
+    "pr_auc": 0.9094,
+    "brier": 0.1447,
+    "ks": 0.6282
+  },
+  "features": [
+    "Gender",
+    "Married",
+    "Dependents",
+    "Education",
+    "Self_Employed",
+    "ApplicantIncome",
+    "CoapplicantIncome",
+    "LoanAmount",
+    "Loan_Amount_Term",
+    "Credit_History",
+    "Property_Area"
+  ],
+  "calibration": "none",
+  "notes": "Kaggle Loan Prediction; LogisticRegression baseline; seed=42"
+}
