@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: loanrisk-api
+    env: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: API_KEY
+        generateValue: true
+      - key: DB_URL
+        value: sqlite:///loanlens.db

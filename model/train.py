@@ -36,6 +36,7 @@ def main():
     if TARGET_COL not in df.columns:
         raise ValueError(f"Missing target column '{TARGET_COL}' in {RAW}")
 
+    # Target: 1 for approved (Y), 0 for not approved (N)
     y = (df[TARGET_COL].map({"Y": 1, "N": 0})).astype(int)
     X = df.drop(columns=[TARGET_COL, "Loan_ID"], errors="ignore")
 
@@ -72,6 +73,10 @@ def main():
 
     feature_cols = X.columns.tolist()
     joblib.dump({"pipeline": pipe, "feature_cols": feature_cols}, ART / "model_v1_0_0.joblib")
+
+    # SHAP background sample as CSV (no pyarrow)
+    bg = X_train.sample(n=min(100, len(X_train)), random_state=42)
+    (ART / "background_v1_0_0.csv").write_text(bg.to_csv(index=False))
 
     manifest = {
         "model_version": "1.0.0",
