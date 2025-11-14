@@ -1,4 +1,4 @@
-#  LoanLens – Credit Risk Scoring API
+#  LoanRisk – Credit Risk Scoring API
 
 **Live API:** [https://loanrisk.onrender.com](https://loanrisk.onrender.com)  
 **Demo:** [https://loanrisk.onrender.com/demo](https://loanrisk.onrender.com/demo)  
@@ -9,7 +9,7 @@
 
 ##  Overview
 
-**LoanLens** is a **cloud-hosted, production-style credit risk scoring microservice**.  
+**LoanRisk** is a **cloud-hosted, production-style credit risk scoring microservice**.  
 It ingests applicant data (income, employment, credit history, loan terms, etc.),  
 predicts the probability of default, and returns:
 

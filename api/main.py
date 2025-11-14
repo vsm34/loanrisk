@@ -207,9 +207,9 @@ class BatchRequest(BaseModel):
 @app.get("/", include_in_schema=False)
 def root_page():
     return HTMLResponse("""
-    <h1>LoanLens API</h1>
+    <h1>LoanRisk API</h1>
     <p style="max-width:720px">
-      LoanLens is a production-style credit risk scoring microservice. 
+      LoanRisk is a production-style credit risk scoring microservice. 
       Send applicant data and receive a calibrated probability of default, an approve/review decision, 
       and the top factors driving that decision. Try the live demo or integrate via the OpenAPI docs.
     </p>
@@ -226,7 +226,7 @@ def root_page():
 def demo_page():
     return HTMLResponse("""
 <!doctype html><html><head><meta charset="utf-8" />
-<title>LoanLens Demo</title>
+<title>LoanRisk Demo</title>
 <style>
 body{font-family:system-ui, sans-serif; max-width:720px; margin:2rem auto; line-height:1.4}
 input,select{padding:6px;width:100%} label{font-weight:600;margin-top:.75rem;display:block}
@@ -237,7 +237,7 @@ code{background:#f6f8fa;padding:2px 4px;border-radius:4px}
 </style>
 </head>
 <body>
-  <h1>LoanLens Demo</h1>
+  <h1>LoanRisk Demo</h1>
   <p>Try a sample applicant and get an approval decision with explanation.</p>
   <div class="card">
     <div class="row">
