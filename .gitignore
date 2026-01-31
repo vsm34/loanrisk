@@ -5,3 +5,6 @@ loanlens.db
 model/artifacts/*.joblib
 # keep manifest tracked:
 # model/artifacts/manifest_v1_0_0.json
+# local db + exports
+data/exports/
+*.db

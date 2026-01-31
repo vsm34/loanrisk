@@ -63,11 +63,23 @@ with ENGINE.begin() as conn:
           latency_ms REAL NOT NULL,
           decision TEXT NOT NULL,
           prob_default REAL NOT NULL,
+          top_contrib_json TEXT,
+          rule_flags_json TEXT,
           status_code INTEGER NOT NULL,
           endpoint TEXT NOT NULL,
           client_api_key TEXT
         );
     """))
+
+with ENGINE.begin() as conn:
+    try:
+        conn.execute(text("ALTER TABLE request_logs ADD COLUMN top_contrib_json TEXT"))
+    except Exception:
+        pass
+    try:
+        conn.execute(text("ALTER TABLE request_logs ADD COLUMN rule_flags_json TEXT"))
+    except Exception:
+        pass
 
 def _log_req(request_id: str,
              latency_ms: float,
@@ -75,14 +87,16 @@ def _log_req(request_id: str,
              prob_default: float,
              status_code: int,
              endpoint: str,
-             api_key_value: str):
+             api_key_value: str,
+             top_contrib_json: str | None,
+             rule_flags_json: str | None):
     with ENGINE.begin() as conn:
         conn.execute(
             text("""
                 INSERT INTO request_logs
                 (ts, request_id, model_version, latency_ms, decision,
-                 prob_default, status_code, endpoint, client_api_key)
-                VALUES (:ts, :rid, :ver, :lat, :dec, :prob, :code, :ep, :api)
+                 prob_default, top_contrib_json, rule_flags_json, status_code, endpoint, client_api_key)
+                VALUES (:ts, :rid, :ver, :lat, :dec, :prob, :top, :rules, :code, :ep, :api)
             """),
             {
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -91,6 +105,8 @@ def _log_req(request_id: str,
                 "lat": float(latency_ms),
                 "dec": decision,
                 "prob": float(prob_default),
+                "top": top_contrib_json,
+                "rules": rule_flags_json,
                 "code": int(status_code),
                 "ep": endpoint,
                 "api": api_key_value[:4] + "****" if api_key_value else None
@@ -149,10 +165,10 @@ def _linear_explanations(df_row: pd.DataFrame, k: int = 3) -> list[dict]:
     out = []
     for i in idx:
         fname = str(names[i]).replace("num__", "").replace("cat__", "")
-        out.append({"feature": fname, "impact": "risk_reducing" if contrib[i] > 0 else "high_risk"})
+        out.append({"feature": fname, "impact": "higher_approval" if contrib[i] > 0 else "higher_risk"})
     return out
 
-def _top_explanations(df_row: pd.DataFrame, prob_default: float, k: int = 3) -> list[dict]:
+def _top_explanations(df_row: pd.DataFrame, prob_approved: float, k: int = 3) -> list[dict]:
     """Try SHAP; if anything’s off, fall back to linear contributions."""
     if not SHAP_READY or SHAP_EXPLAINER is None:
         return _linear_explanations(df_row, k=k)
@@ -168,26 +184,120 @@ def _top_explanations(df_row: pd.DataFrame, prob_default: float, k: int = 3) -> 
         top = s.abs().sort_values(ascending=False).head(k)
         return [
             {"feature": str(feat),
-             "impact": ("risk_reducing" if s[feat] < 0 else "high_risk")}
+             "impact": ("higher_approval" if s[feat] > 0 else "higher_risk")}
             for feat in top.index
         ]
     except Exception:
         return _linear_explanations(df_row, k=k)
 
+def compute_linear_contributions(df_row: pd.DataFrame, k: int = 10) -> list[dict]:
+    """Return top-k transformed feature contributions for Power BI."""
+    try:
+        pre = PIPE.named_steps["pre"]
+        clf = PIPE.named_steps["clf"]
+    except Exception:
+        return []
+    try:
+        Xtr = pre.transform(df_row)
+        if hasattr(Xtr, "toarray"):
+            Xtr = Xtr.toarray()
+        X = np.asarray(Xtr)[0]
+        names = pre.get_feature_names_out()
+        if not hasattr(clf, "coef_"):
+            return []
+        contrib = X * clf.coef_[0]
+        idx = np.argsort(np.abs(contrib))[::-1][:k]
+        return [
+            {"feature": str(names[i]), "contribution": float(contrib[i])}
+            for i in idx
+        ]
+    except Exception:
+        return []
+
+def _rule_flags(payload: Dict[str, Any]) -> list[str]:
+    flags: list[str] = []
+    applicant_income = _to_float(payload.get("ApplicantIncome"))
+    if applicant_income is None or applicant_income <= 0:
+        flags.append("income_missing_or_zero")
+    loan_amount = _to_float(payload.get("LoanAmount"))
+    if loan_amount is None or loan_amount <= 0:
+        flags.append("loanamount_missing_or_invalid")
+    elif loan_amount > 1000:
+        flags.append("out_of_distribution_loanamount")
+    return flags
+
+def _to_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
 def _score_payload(payload: Dict[str, Any]) -> dict:
     """Core scorer used by both API and demo."""
+    rule_flags = _rule_flags(payload)
+    if "income_missing_or_zero" in rule_flags:
+        return {
+            "model_version": MANIFEST["model_version"],
+            "prob_approved": 0.0,
+            "prob_default": 1.0,
+            "decision": "reject",
+            "threshold": 0.25,
+            "explanations": [],
+            "confidence": 0.8,
+            "explanation": "income_missing_or_zero",
+            "rule_flags": rule_flags,
+            "top_contributions": [],
+        }
+
+    if "loanamount_missing_or_invalid" in rule_flags:
+        return {
+            "model_version": MANIFEST["model_version"],
+            "prob_approved": 0.5,
+            "prob_default": 0.5,
+            "decision": "review",
+            "threshold": 0.25,
+            "explanations": [],
+            "confidence": 0.8,
+            "explanation": "loanamount_missing_or_invalid",
+            "rule_flags": rule_flags,
+            "top_contributions": [],
+        }
+
+    force_review = "out_of_distribution_loanamount" in rule_flags
     df = _df_from_payload(payload)
-    prob_default = float(PIPE.predict_proba(df)[0, 1])
+    prob_approved = float(PIPE.predict_proba(df)[0, 1])
+    prob_default = 1.0 - prob_approved
     threshold = 0.25
-    decision = "approve" if prob_default < threshold else "review"
-    explanations = _top_explanations(df, prob_default, k=3)
+
+    if prob_default <= 0.25:
+        decision = "approve"
+    elif prob_default < 0.50:
+        decision = "review"
+    else:
+        decision = "reject"
+
+    explanation = None
+    if force_review:
+        decision = "review"
+        explanation = "out_of_distribution_loanamount"
+
+    explanations = _top_explanations(df, prob_approved, k=3)
+    top_contributions = compute_linear_contributions(df, k=10)
     return {
         "model_version": MANIFEST["model_version"],
+        "prob_approved": round(prob_approved, 4),
         "prob_default": round(prob_default, 4),
         "decision": decision,
         "threshold": threshold,
         "explanations": explanations,
         "confidence": 0.8,
+        "explanation": explanation,
+        "rule_flags": rule_flags,
+        "top_contributions": top_contributions,
     }
 
 # -------------------------------
@@ -370,7 +480,7 @@ class BatchRequest(BaseModel):
 def score(req: ScoreRequest, x_api_key: str = Header(default="")):
     t0 = time.time()
     if x_api_key != API_KEY:
-        _log_req(uuid.uuid4().hex[:8], 0.0, "unauthorized", 0.0, 401, "/api/v1/score", x_api_key)
+        _log_req(uuid.uuid4().hex[:8], 0.0, "unauthorized", 0.0, 401, "/api/v1/score", x_api_key, None, None)
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     rid = uuid.uuid4().hex[:8]
@@ -379,11 +489,17 @@ def score(req: ScoreRequest, x_api_key: str = Header(default="")):
         decision = result["decision"]
         prob_default = result["prob_default"]
     except Exception as e:
-        _log_req(rid, (time.time() - t0) * 1000.0, "error", 0.0, 400, "/api/v1/score", x_api_key)
+        _log_req(rid, (time.time() - t0) * 1000.0, "error", 0.0, 400, "/api/v1/score", x_api_key, None, None)
         raise HTTPException(status_code=400, detail=f"Scoring failed: {e}")
 
     latency_ms = (time.time() - t0) * 1000.0
-    _log_req(rid, latency_ms, decision, prob_default, 200, "/api/v1/score", x_api_key)
+    rule_flags = result.get("rule_flags", [])
+    top_contrib_json = None
+    if "income_missing_or_zero" not in rule_flags and "loanamount_missing_or_invalid" not in rule_flags:
+        df_row = _df_from_payload(req.payload)
+        top_contrib_json = json.dumps(compute_linear_contributions(df_row, k=10))
+    rule_flags_json = json.dumps(rule_flags)
+    _log_req(rid, latency_ms, decision, prob_default, 200, "/api/v1/score", x_api_key, top_contrib_json, rule_flags_json)
 
     result["request_id"] = rid
     return result
@@ -392,7 +508,7 @@ def score(req: ScoreRequest, x_api_key: str = Header(default="")):
 def batch_score(req: BatchRequest, x_api_key: str = Header(default="")):
     t0 = time.time()
     if x_api_key != API_KEY:
-        _log_req(uuid.uuid4().hex[:8], 0.0, "unauthorized", 0.0, 401, "/api/v1/batch/score", x_api_key)
+        _log_req(uuid.uuid4().hex[:8], 0.0, "unauthorized", 0.0, 401, "/api/v1/batch/score", x_api_key, None, None)
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     results = []
@@ -403,11 +519,17 @@ def batch_score(req: BatchRequest, x_api_key: str = Header(default="")):
             r = _score_payload(rec)
             r["request_id"] = rid
             results.append(r)
-            _log_req(rid, 0.0, r["decision"], r["prob_default"], 200, "/api/v1/batch/score", x_api_key)
+            rule_flags = r.get("rule_flags", [])
+            top_contrib_json = None
+            if "income_missing_or_zero" not in rule_flags and "loanamount_missing_or_invalid" not in rule_flags:
+                df_row = _df_from_payload(rec)
+                top_contrib_json = json.dumps(compute_linear_contributions(df_row, k=10))
+            rule_flags_json = json.dumps(rule_flags)
+            _log_req(rid, 0.0, r["decision"], r["prob_default"], 200, "/api/v1/batch/score", x_api_key, top_contrib_json, rule_flags_json)
         except Exception as e:
             ok = False
             results.append({"request_id": rid, "error": str(e)})
-            _log_req(rid, 0.0, "error", 0.0, 400, "/api/v1/batch/score", x_api_key)
+            _log_req(rid, 0.0, "error", 0.0, 400, "/api/v1/batch/score", x_api_key, None, None)
 
     total_latency = (time.time() - t0) * 1000.0
     return {
